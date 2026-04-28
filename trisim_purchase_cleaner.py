@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np, pandas as pd
 from datetime import datetime
 
-APP_VERSION = "1.4h44-FIX_HEBREW_QUOTES"
+APP_VERSION = "1.4h45-SLAT_ROUND_UP"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -497,7 +497,7 @@ def pick_mapping_columns(mp: pd.DataFrame):
     candidates_sku  = ["שם-מקייט","מק\"ט","מקט","sku","code"]
     candidates_desc = ["תיאור","תאור","description","desc"]
     candidates_vend = ["ספק","יצרן","vendor","supplier"]
-    candidates_split= ["שלב משוך תחתון","bottom"]
+    candidates_split= ["חלוקה","שלב משוך תחתון","bottom"]
     def find_col(cands, fallback=None):
         for c in mp.columns:
             for cand in cands:
@@ -597,6 +597,10 @@ def main():
         mp = read_mapping_autodetect(mp_path)
         sku_col, desc_col, vendor_col, split_col = pick_mapping_columns(mp)
         mp = mp.rename(columns={sku_col:"__SKU__", desc_col:"__DESC__", (vendor_col if vendor_col else ""):"__VENDOR__"})
+        if split_col and split_col in mp.columns:
+            mp = mp.rename(columns={split_col: "__SPLIT__"})
+        else:
+            mp["__SPLIT__"] = pd.NA
         mp["__DESC_N__"] = mp["__DESC__"].astype(str).str.replace(r"\s+"," ", regex=True).str.strip()
         mp["__SKU_N__"]  = mp["__SKU__"].map(norm_sku)
 
@@ -647,7 +651,7 @@ def main():
             log_message(f"  MAP: SKU={row['__SKU__']}, desc='{row['__DESC_N__']}'")
 
         j_desc = df.merge(
-            mp[["__DESC_N__","__SKU__","__DESC__","__VENDOR__","__SKU_N__"]].drop_duplicates("__DESC_N__"),
+            mp[["__DESC_N__","__SKU__","__DESC__","__VENDOR__","__SKU_N__","__SPLIT__"]].drop_duplicates("__DESC_N__"),
             how="left", on="__DESC_N__"
         )
         matched_desc = j_desc[j_desc["__SKU__"].notna()].copy()
@@ -665,7 +669,7 @@ def main():
             log_message("=== SKU MATCHING DEBUG ===")
             df["__SKU_N__"] = df["שם-מקייט"].map(norm_sku)
             j_sku = df.merge(
-                mp[["__SKU_N__","__SKU__","__DESC__","__VENDOR__"]].drop_duplicates("__SKU_N__"),
+                mp[["__SKU_N__","__SKU__","__DESC__","__VENDOR__","__SPLIT__"]].drop_duplicates("__SKU_N__"),
                 how="left", on="__SKU_N__"
             )
             matched_sku = j_sku[j_sku["__SKU__"].notna()].copy()
@@ -750,6 +754,23 @@ def main():
         if need.any():
             height_m[need] = (area_m2_in[need] / width_m[need]).round(5)
         height_mm_final = fix_units_mm(pd.to_numeric(pd.Series(height_m).astype(float)*1000, errors="coerce"))
+
+        # Pavel's rule: round shutter height UP to the nearest multiple of חלוקה (slat profile mm).
+        # Applies only to rows where the mapping defines a positive __SPLIT__ value (50/52/55/61 mm etc.).
+        if "__SPLIT__" in matched.columns:
+            split_mm = pd.to_numeric(matched["__SPLIT__"], errors="coerce")
+            split_mm.index = height_mm_final.index
+            h_float = height_mm_final.astype(float)
+            mask = split_mm.notna() & (split_mm > 0) & h_float.notna() & (h_float > 0)
+            if mask.any():
+                rounded = np.ceil(h_float[mask] / split_mm[mask]) * split_mm[mask]
+                changed = (rounded != h_float[mask]).sum()
+                log_message(f"Slat-rounding: {int(mask.sum())} shutter rows have חלוקה; {int(changed)} heights were rounded up.")
+                for idx in h_float[mask].index:
+                    log_message(f"  idx={idx}: height {h_float[idx]:.0f} → {rounded[idx]:.0f} (חלוקה={split_mm[idx]:.0f})")
+                h_float.loc[mask] = rounded
+                height_mm_final = h_float
+
         area_m2_out = (width_mm.astype(float)/1000.0 * (height_mm_final.astype(float)/1000.0)).round(5)
 
         project = project_from_stem(src_path.stem)
@@ -848,11 +869,11 @@ def main():
         # NEW: Filter out codes for shutters that have "חלוקה" in the mapping file
         # These are already classified as slat types and shouldn't have bottom rail calculated
         codes_with_split = set()
-        if split_col and split_col in mp.columns:
+        if "__SPLIT__" in mp.columns:
             # Get SKUs from matched rows
             matched_skus = matched["__SKU__"].dropna().unique()
             # Find which ones have חלוקה defined
-            skus_with_split = mp[mp[split_col].notna() & (mp[split_col].astype(str).str.strip() != '')]["__SKU__"].tolist()
+            skus_with_split = mp[mp["__SPLIT__"].notna() & (mp["__SPLIT__"].astype(str).str.strip() != '')]["__SKU__"].tolist()
             if skus_with_split:
                 log_message(f"Found {len(skus_with_split)} SKUs with 'חלוקה' defined: {skus_with_split}")
                 # Don't ask about bottom rail for these shutters - they're already slat types
