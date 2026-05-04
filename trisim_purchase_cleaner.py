@@ -16,8 +16,9 @@ from tkinter import filedialog, messagebox
 from pathlib import Path
 import numpy as np, pandas as pd
 from datetime import datetime
+from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h45-SLAT_ROUND_UP"
+APP_VERSION = "1.4h46-PICKER_ALL_AND_WIDTHS"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -537,8 +538,20 @@ def select_codes_from_list(codes_list):
                        bg="#f0f0f0", anchor="w").pack(fill="x", padx=10)
     canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
     scrollbar.pack(side="right", fill="y")
-    tk.Button(root, text="אישור", command=on_ok, font=("Arial", 11, "bold"),
-              bg="#4CAF50", fg="white", padx=20, pady=5).pack(pady=10)
+
+    def select_all():
+        for v in checks.values(): v.set(True)
+    def clear_all():
+        for v in checks.values(): v.set(False)
+
+    btn_row = tk.Frame(root, bg="#f0f0f0")
+    btn_row.pack(pady=10)
+    tk.Button(btn_row, text="בחר הכל", command=select_all, font=("Arial", 10),
+              bg="#2196F3", fg="white", padx=12, pady=4).pack(side="right", padx=4)
+    tk.Button(btn_row, text="נקה הכל", command=clear_all, font=("Arial", 10),
+              bg="#9E9E9E", fg="white", padx=12, pady=4).pack(side="right", padx=4)
+    tk.Button(btn_row, text="אישור", command=on_ok, font=("Arial", 11, "bold"),
+              bg="#4CAF50", fg="white", padx=20, pady=5).pack(side="right", padx=4)
     root.mainloop()
     log_message(f"Selected codes for bottom rail: {chosen}")
     return chosen
@@ -944,6 +957,18 @@ def main():
                         log_message(f"Successfully swapped width/height for sheet '{sheet_name}'")
                     except (ValueError, IndexError) as e:
                         log_message(f"Could not find רוחב/גובה columns in sheet '{sheet_name}': {e}")
+
+                # Auto-fit column widths so Hebrew descriptions don't truncate.
+                if ws.max_row > 0 and ws.max_column > 0:
+                    for col_idx in range(1, ws.max_column + 1):
+                        col_letter = get_column_letter(col_idx)
+                        max_len = 0
+                        for row_idx in range(1, ws.max_row + 1):
+                            v = ws.cell(row=row_idx, column=col_idx).value
+                            if v is not None:
+                                vl = len(str(v))
+                                if vl > max_len: max_len = vl
+                        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 50)
 
         log_message(f"Output written successfully: {out_path}")
         log_message(f"Output shape: {out.shape}")
