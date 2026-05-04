@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h46-PICKER_ALL_AND_WIDTHS"
+APP_VERSION = "1.4h47-PICKER_LAYOUT_FIX"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -536,22 +536,23 @@ def select_codes_from_list(codes_list):
         checks[code] = v
         tk.Checkbutton(scrollable_frame, text=code, variable=v, font=("Arial", 10),
                        bg="#f0f0f0", anchor="w").pack(fill="x", padx=10)
-    canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-    scrollbar.pack(side="right", fill="y")
-
     def select_all():
         for v in checks.values(): v.set(True)
     def clear_all():
         for v in checks.values(): v.set(False)
 
+    # Reserve the bottom strip for buttons FIRST so the canvas can't eat the space.
     btn_row = tk.Frame(root, bg="#f0f0f0")
-    btn_row.pack(pady=10)
-    tk.Button(btn_row, text="בחר הכל", command=select_all, font=("Arial", 10),
-              bg="#2196F3", fg="white", padx=12, pady=4).pack(side="right", padx=4)
+    btn_row.pack(side="bottom", fill="x", pady=10)
+    tk.Button(btn_row, text="אישור", command=on_ok, font=("Arial", 11, "bold"),
+              bg="#4CAF50", fg="white", padx=20, pady=5).pack(side="right", padx=6)
     tk.Button(btn_row, text="נקה הכל", command=clear_all, font=("Arial", 10),
               bg="#9E9E9E", fg="white", padx=12, pady=4).pack(side="right", padx=4)
-    tk.Button(btn_row, text="אישור", command=on_ok, font=("Arial", 11, "bold"),
-              bg="#4CAF50", fg="white", padx=20, pady=5).pack(side="right", padx=4)
+    tk.Button(btn_row, text="בחר הכל", command=select_all, font=("Arial", 10),
+              bg="#2196F3", fg="white", padx=12, pady=4).pack(side="right", padx=4)
+
+    canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+    scrollbar.pack(side="right", fill="y")
     root.mainloop()
     log_message(f"Selected codes for bottom rail: {chosen}")
     return chosen
