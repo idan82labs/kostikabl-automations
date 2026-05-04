@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h47-PICKER_LAYOUT_FIX"
+APP_VERSION = "1.4h48-ONEFILE_AND_ASCII_MAPPING"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -474,17 +474,24 @@ def ask_for_output_dir(default_dir: Path = None) -> Path:
     root.destroy()
     return Path(p) if p else None
 
+MAPPING_FILENAMES = ["kostika_mapping.xlsx", "מקטים תריסים כולל.xlsx"]
+
 def find_mapping(exe_dir: Path, csv_parent: Path):
-    possibilities = [
-        exe_dir / "data" / "מקטים תריסים כולל.xlsx",
-        exe_dir / "מקטים תריסים כולל.xlsx",
-        csv_parent / "מקטים תריסים כולל.xlsx",
-    ]
+    # PyInstaller --onefile extracts bundled data to sys._MEIPASS at runtime;
+    # in --onedir mode, sys.executable is the .exe and bundled data sits next to it.
+    # Search both, plus operator-editable copies next to the input file.
+    search_dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        search_dirs.extend([Path(meipass), Path(meipass) / "data"])
+    search_dirs.extend([exe_dir, exe_dir / "data", csv_parent])
+
+    possibilities = [d / name for d in search_dirs for name in MAPPING_FILENAMES]
     for p in possibilities:
         if p.exists():
             log_message(f"Found mapping file: {p}")
             return p
-    raise FileNotFoundError(f"לא נמצא קובץ המיפוי 'מקטים תריסים כולל.xlsx' באף אחד מהמיקומים:\n" +
+    raise FileNotFoundError("לא נמצא קובץ המיפוי 'kostika_mapping.xlsx' באף אחד מהמיקומים:\n" +
                             "\n".join(str(pp) for pp in possibilities))
 
 def read_mapping_autodetect(path: Path) -> pd.DataFrame:

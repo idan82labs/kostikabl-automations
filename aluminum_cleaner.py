@@ -17,22 +17,25 @@ from typing import List, Optional, Set
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 SHUTTER_SKU_PATTERN = re.compile(r"^(11|13)\d{6}$")
-MAPPING_FILENAME = "מקטים תריסים כולל.xlsx"
+MAPPING_FILENAMES = ["kostika_mapping.xlsx", "מקטים תריסים כולל.xlsx"]
 
 
 def _load_shutter_skus(input_path: str) -> Set[str]:
     """Return the set of SKUs (digits-only) that the master mapping classifies
-    as shutter components. Searches near the input file and the script/exe.
-    Missing mapping is silent — the regex fallback still catches 11/13-prefixed SKUs."""
+    as shutter components. Searches PyInstaller's --onefile temp dir, next to
+    the .exe (--onedir), and the input file's folder. Missing mapping is silent
+    — the regex fallback still catches 11/13-prefixed SKUs."""
     exe_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-    candidates = [
-        os.path.join(exe_dir, "data", MAPPING_FILENAME),
-        os.path.join(exe_dir, MAPPING_FILENAME),
-        os.path.join(os.path.dirname(input_path) or ".", MAPPING_FILENAME),
-    ]
+    input_dir = os.path.dirname(input_path) or "."
+    search_dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        search_dirs.extend([meipass, os.path.join(meipass, "data")])
+    search_dirs.extend([exe_dir, os.path.join(exe_dir, "data"), input_dir])
+    candidates = [os.path.join(d, name) for d in search_dirs for name in MAPPING_FILENAMES]
     for p in candidates:
         if os.path.exists(p):
             try:
