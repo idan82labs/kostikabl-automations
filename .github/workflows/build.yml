@@ -1,0 +1,90 @@
+name: Build Windows .exe
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller pandas numpy openpyxl xlrd
+
+      - name: Show versions
+        run: |
+          python --version
+          pyinstaller --version
+          python -c "import pandas, numpy, openpyxl, xlrd; print('pandas', pandas.__version__, 'numpy', numpy.__version__, 'openpyxl', openpyxl.__version__, 'xlrd', xlrd.__version__)"
+
+      - name: Syntax check
+        run: |
+          python -c "import ast; ast.parse(open('trisim_purchase_cleaner.py', encoding='utf-8').read()); print('trisim OK')"
+          python -c "import ast; ast.parse(open('aluminum_cleaner.py', encoding='utf-8').read()); print('aluminum OK')"
+
+      - name: Read versions from source
+        id: vers
+        shell: pwsh
+        run: |
+          $trisim = (Select-String -Path trisim_purchase_cleaner.py -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          $alu    = (Select-String -Path aluminum_cleaner.py        -Pattern '^APP_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          echo "trisim=$trisim" >> $env:GITHUB_OUTPUT
+          echo "aluminum=$alu"  >> $env:GITHUB_OUTPUT
+          Write-Host "trisim=$trisim  aluminum=$alu"
+
+      - name: Build trisim_purchase_cleaner.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name trisim_purchase_cleaner --add-data "kostika_mapping.xlsx;." trisim_purchase_cleaner.py
+
+      - name: Build aluminum_cleaner.exe
+        run: pyinstaller --noconfirm --onefile --windowed --name aluminum_cleaner --add-data "kostika_mapping.xlsx;." aluminum_cleaner.py
+
+      - name: Verify both .exe files exist
+        shell: pwsh
+        run: |
+          Get-ChildItem dist
+          if (-not (Test-Path "dist/trisim_purchase_cleaner.exe")) { throw "trisim exe missing" }
+          if (-not (Test-Path "dist/aluminum_cleaner.exe"))        { throw "aluminum exe missing" }
+
+      - name: Stage release bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item dist/trisim_purchase_cleaner.exe release/
+          Copy-Item dist/aluminum_cleaner.exe        release/
+          Copy-Item kostika_mapping.xlsx              release/
+          Copy-Item BUILD.txt                         release/
+          Get-ChildItem release
+
+      - name: Upload artifact (download under Actions → run → Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kostika-cleaners-trisim-${{ steps.vers.outputs.trisim }}-aluminum-${{ steps.vers.outputs.aluminum }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to GitHub Release (only on tag push v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/trisim_purchase_cleaner.exe
+            release/aluminum_cleaner.exe
+            release/kostika_mapping.xlsx
+            release/BUILD.txt
+          generate_release_notes: true

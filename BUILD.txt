@@ -1,0 +1,129 @@
+================================================================
+Kostika cleaners — Windows .exe build instructions (single-file)
+================================================================
+
+Versions in this bundle:
+  trisim_purchase_cleaner.py  → 1.4h48-ONEFILE_AND_ASCII_MAPPING
+  aluminum_cleaner.py         → 2.2
+
+Files included:
+  trisim_purchase_cleaner.py     (shutter cleaner)
+  aluminum_cleaner.py            (material/profile cleaner)
+  kostika_mapping.xlsx           (master mapping — bundled inside both .exes)
+
+
+----------------------------------------------------------------
+ONE-TIME SETUP (Windows build machine)
+----------------------------------------------------------------
+
+1. Install Python 3.10 or 3.11 (NOT 3.12+ for max compatibility):
+     https://www.python.org/downloads/
+   IMPORTANT: tick "Add Python to PATH" during install.
+
+2. Open Command Prompt (cmd.exe) in this folder, then:
+
+     python -m pip install --upgrade pip
+     python -m pip install pyinstaller pandas numpy openpyxl xlrd
+
+
+----------------------------------------------------------------
+BUILD COMMANDS  ←  single-file .exe (no _internal folder)
+----------------------------------------------------------------
+
+Each command produces ONE executable in dist\ — no folders, no
+sidecar _internal\, just a standalone .exe the operator can copy
+anywhere and double-click.
+
+------------------------------------------------------------------
+Trisim shutter cleaner:
+
+    pyinstaller --noconfirm --onefile --windowed --name trisim_purchase_cleaner --add-data "kostika_mapping.xlsx;." trisim_purchase_cleaner.py
+
+Output:  dist\trisim_purchase_cleaner.exe
+
+------------------------------------------------------------------
+Aluminum / material cleaner:
+
+    pyinstaller --noconfirm --onefile --windowed --name aluminum_cleaner --add-data "kostika_mapping.xlsx;." aluminum_cleaner.py
+
+Output:  dist\aluminum_cleaner.exe
+
+
+----------------------------------------------------------------
+SHIP TO KOSTIKA
+----------------------------------------------------------------
+
+Send each .exe directly to the operator. They double-click it; no
+Python install, no folders to keep together.
+
+Recommended (so the operator can edit SKU mappings WITHOUT needing
+us to rebuild): also drop a copy of  kostika_mapping.xlsx  in
+the same folder as the .exe (or next to the input CSV/XLS). The
+.exe checks the bundled copy first, then any side-by-side copy,
+then the input file's folder. Whichever it finds first wins, so
+an operator-edited side copy can override the bundled default.
+
+
+----------------------------------------------------------------
+NOTES / PITFALLS
+----------------------------------------------------------------
+
+• --onefile vs the previous --onedir: the .exe is a single file
+  and self-extracts to a temp folder on each run, so first launch
+  is ~2-3 seconds slower. Subsequent launches are normal speed.
+
+• Windows quoting: the --add-data separator is a SEMICOLON on
+  Windows, COLON on macOS/Linux. Commands above are Windows-correct.
+
+• If PyInstaller errors with "ModuleNotFoundError: numpy.core._multiarray_umath"
+  or similar, force the hidden import:
+
+    pyinstaller ... --hidden-import numpy.core._multiarray_umath ... trisim_purchase_cleaner.py
+
+• If the .exe opens and immediately closes with no window, drop
+  --windowed temporarily — that'll show you the error in a console.
+
+• xlrd is needed for reading the older .xls quantity-update files
+  in the aluminum cleaner. If you ever drop .xls support and only
+  use .xlsx, you can omit xlrd.
+
+• The mapping file was renamed to ASCII (`kostika_mapping.xlsx`)
+  so Windows doesn't render it as gibberish (the previous Hebrew
+  filename `מקטים תריסים כולל.xlsx` displayed as ?ק??? on some
+  Windows installs). The .exe still falls back to the Hebrew
+  filename if it finds one — no break for existing deployments.
+
+
+----------------------------------------------------------------
+WHAT CHANGED IN THIS RELEASE
+----------------------------------------------------------------
+
+Trisim 1.4h48 (was 1.4h44):
+  • Round shutter height UP to nearest multiple of חלוקה (slat
+    profile) using the master mapping. Example: height 2517 mm
+    with חלוקה=52 → 2548 mm. Area-per-unit recalculates from
+    the rounded H.
+  • Bottom-rail picker now has בחר הכל / נקה הכל / אישור buttons
+    in a fixed bottom row (was being clipped off-screen in 1.4h46).
+  • All output sheets get auto-fit column widths so long Hebrew
+    descriptions don't truncate in Excel.
+  • find_mapping() now searches PyInstaller's --onefile temp dir
+    (sys._MEIPASS) in addition to the .exe folder and input
+    folder. Works for both --onefile and --onedir builds.
+  • Mapping filename normalized to ASCII (`kostika_mapping.xlsx`),
+    Hebrew filename retained as fallback.
+
+Aluminum 2.2 (was unversioned):
+  • Drops shutter-family rows that previously leaked into the
+    material list (e.g. "שלב 8" SKU 13090001/13090002). Filter:
+    SKU is in the master mapping OR matches ^(11|13)\d{6}$.
+  • Output Excel: now RTL with auto-fit column widths.
+  • New optional dual-input mode: in addition to the existing
+    CSV-only flow, accept a second XLS with updated quantities
+    (the "מחיר לסדרה" Priority report). For each SKU, scale
+    csv_qty and csv_weight by xls_qty/sum(csv_qty for that SKU).
+    UI: extra file dialog after the CSV one (cancel = CSV-only).
+    CLI: new --qty-update <path> flag.
+  • _load_shutter_skus() now also searches sys._MEIPASS for the
+    bundled mapping in --onefile builds.
+  • Mapping filename normalized to ASCII.
