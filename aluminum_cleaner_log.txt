@@ -1,0 +1,6 @@
+[2026-05-04 13:08:15.664358] Reconciliation: scaled 168 rows against XLS quantities
+[2026-05-04 13:08:15.671368] Filtered 1 shutter rows from material output: ['13090001']
+[2026-05-04 13:08:15.988174] ERROR: Input is missing required columns: ['פרויקט', 'מידה']
+  Input columns (8): ["שם-מק''ט", 'תאור', 'צבע', 'יחידות מדידה', 'כמות', 'הנחה', "' מחיר ליח", "סה''כ"]
+  HINT: The main input must be the rich Priority CSV. The 'מחיר לסדרה' XLS
+  belongs in --qty-update, not as the primary input.

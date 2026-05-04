@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h49-AUDIT_RED_BUCKET"
+APP_VERSION = "1.4h50-PICKER_FALLBACK_AND_LOGGING"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -893,8 +893,10 @@ def main():
                               if s and s.lower()!='nan' and len(s)<=20 and pattern.match(s)})
 
         # Filter out codes whose SKU has 'חלוקה' set in the mapping — those are slat-type
-        # shutters that already include their bottom rail and shouldn't be offered for selection.
+        # shutters that already include their bottom rail and shouldn't normally be offered.
         # Cross-reference via the matched DataFrame so we map SKUs (mapping) → codes (project).
+        # IMPORTANT: if every code is a slat-type, fall back to showing all codes so the operator
+        # still sees the picker — they can decide on a per-row basis.
         codes_with_split = set()
         if "__SPLIT__" in matched.columns and "קוד זיהוי" in matched.columns:
             split_mask = matched["__SPLIT__"].notna() & (matched["__SPLIT__"].astype(str).str.strip() != "")
@@ -904,9 +906,13 @@ def main():
                     if str(c).strip() and str(c).lower() != "nan"
                 }
                 if codes_with_split:
-                    log_message(f"Slat-type codes (have חלוקה, skipping bottom-rail prompt): {sorted(codes_with_split)}")
-                    uniq_codes = [c for c in uniq_codes if c not in codes_with_split]
-                    log_message(f"Offering bottom rail selection for {len(uniq_codes)} codes")
+                    log_message(f"Slat-type codes (have חלוקה): {sorted(codes_with_split)}")
+                    filtered = [c for c in uniq_codes if c not in codes_with_split]
+                    if filtered:
+                        uniq_codes = filtered
+                        log_message(f"Offering bottom rail picker for {len(uniq_codes)} non-slat codes")
+                    else:
+                        log_message(f"All {len(uniq_codes)} codes are slat-types — showing them anyway so the operator sees the picker")
 
         chosen = select_codes_from_list(uniq_codes) if uniq_codes else []
 

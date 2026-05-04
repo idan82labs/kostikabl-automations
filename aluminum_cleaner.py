@@ -13,11 +13,41 @@ Fixes vs previous version:
 """
 
 import argparse, sys, re, os
+from datetime import datetime
 from typing import List, Optional, Set
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
+
+
+def _safe_log(msg: str) -> None:
+    """Write a status line that survives PyInstaller --windowed (sys.stderr is None there).
+    Always tries the log file; tries stderr only if it exists."""
+    line = msg if msg.endswith("\n") else msg + "\n"
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(line)
+    except Exception:
+        pass
+    try:
+        base = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
+        with open(os.path.join(base, "aluminum_cleaner_log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now()}] {line}")
+    except Exception:
+        pass
+
+
+def _show_error_messagebox(text: str) -> None:
+    """Best-effort tk error popup so --windowed operators see fatal errors instead of a silent exit."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+        messagebox.showerror("שגיאה", text)
+        root.destroy()
+    except Exception:
+        pass
 
 SHUTTER_SKU_PATTERN = re.compile(r"^(11|13)\d{6}$")
 MAPPING_FILENAMES = ["kostika_mapping.xlsx", "מקטים תריסים כולל.xlsx"]
@@ -173,7 +203,7 @@ def reconcile_with_xls(df: pd.DataFrame, xls_path: str) -> pd.DataFrame:
         None,
     )
     if not xls_qty_col:
-        sys.stderr.write("WARN: 'כמות' column not found in XLS — skipping reconciliation\n")
+        _safe_log("WARN: 'כמות' column not found in XLS — skipping reconciliation")
         return df
 
     xls_map = {}
@@ -192,7 +222,7 @@ def reconcile_with_xls(df: pd.DataFrame, xls_path: str) -> pd.DataFrame:
     csv_qty_col = next((c for c in df.columns if normalize_header(c) == "כמות"), None)
     csv_weight_col = next((c for c in df.columns if normalize_header(c) == "משקל"), None)
     if not csv_qty_col:
-        sys.stderr.write("WARN: CSV missing 'כמות' column — skipping reconciliation\n")
+        _safe_log("WARN: CSV missing 'כמות' column — skipping reconciliation")
         return df
 
     csv_sku_col = _smart_choose_sku(df, None)
@@ -232,13 +262,15 @@ def reconcile_with_xls(df: pd.DataFrame, xls_path: str) -> pd.DataFrame:
     csv_skus = set(sku_norm)
     xls_only = [s for s in xls_map if s not in csv_skus]
     if xls_only:
-        sys.stderr.write(f"XLS-only SKUs dropped (no CSV reference for kg-per-unit): {xls_only}\n")
+        head_x = xls_only[:10]
+        suffix_x = f" (+{len(xls_only) - 10} more)" if len(xls_only) > 10 else ""
+        _safe_log(f"XLS-only SKUs dropped (no CSV reference for kg-per-unit): {head_x}{suffix_x}")
     csv_only_unique = sorted(set(csv_only))
     if csv_only_unique:
         head = csv_only_unique[:10]
         suffix = f" (+{len(csv_only_unique) - 10} more)" if len(csv_only_unique) > 10 else ""
-        sys.stderr.write(f"CSV-only SKUs kept as-is: {head}{suffix}\n")
-    sys.stderr.write(f"Reconciliation: scaled {matched} rows against XLS quantities\n")
+        _safe_log(f"CSV-only SKUs kept as-is: {head}{suffix}")
+    _safe_log(f"Reconciliation: scaled {matched} rows against XLS quantities")
     return df
 
 
@@ -314,12 +346,14 @@ def main():
     required_cols = ["פרויקט", "מידה"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        sys.stderr.write(
+        msg = (
             f"ERROR: Input is missing required columns: {missing}\n"
             f"  Input columns ({len(df.columns)}): {df.columns.tolist()[:15]}{'...' if len(df.columns) > 15 else ''}\n"
             f"  HINT: The main input must be the rich Priority CSV. The 'מחיר לסדרה' XLS\n"
-            f"  belongs in --qty-update, not as the primary input.\n"
+            f"  belongs in --qty-update, not as the primary input."
         )
+        _safe_log(msg)
+        _show_error_messagebox(msg)
         sys.exit(2)
 
     sku_col = _smart_choose_sku(df, args.sku_col)
@@ -332,13 +366,15 @@ def main():
                 break
     if not color_col:
         cols = df.columns.tolist()
-        sys.stderr.write(
+        msg = (
             f"ERROR: Color/Shade column not found.\n"
             f"  Input has {len(cols)} columns: {cols[:15]}{'...' if len(cols) > 15 else ''}\n"
             f"  HINT: The main input must be the rich Priority CSV (with 'צבע פנימי' / 'גוון').\n"
             f"  If you meant the 'מחיר לסדרה' XLS quantity-update report, pass it via --qty-update,\n"
-            f"  not as the primary input.\n"
+            f"  not as the primary input."
         )
+        _safe_log(msg)
+        _show_error_messagebox(msg)
         sys.exit(2)
 
     rule1 = df[sku_col].apply(rule_sku_is_numeric)
@@ -359,7 +395,7 @@ def main():
     n_shutter_dropped = int(shutter_drops_mask.sum())
     if n_shutter_dropped:
         dropped = df.loc[shutter_drops_mask, sku_col].astype(str).tolist()
-        sys.stderr.write(f"Filtered {n_shutter_dropped} shutter rows from material output: {dropped}\n")
+        _safe_log(f"Filtered {n_shutter_dropped} shutter rows from material output: {dropped}")
 
     kept = df[rule1 & rule2 & rule3 & rule_not_shutter].copy()
 
