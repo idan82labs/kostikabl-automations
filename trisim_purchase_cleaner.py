@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h48-ONEFILE_AND_ASCII_MAPPING"
+APP_VERSION = "1.4h49-AUDIT_RED_BUCKET"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -529,6 +529,11 @@ def select_codes_from_list(codes_list):
         chosen.clear()
         chosen.extend([c for c,v in checks.items() if v.get()])
         root.destroy()
+    def on_close():
+        # Window-X = cancel; leaves chosen empty so no bottom-rail rows are added.
+        chosen.clear()
+        root.destroy()
+    root.protocol("WM_DELETE_WINDOW", on_close)
     checks = {}
     canvas = tk.Canvas(root, bg="#f0f0f0")
     scrollbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
@@ -887,23 +892,21 @@ def main():
         uniq_codes = sorted({ s for s in good["קוד זיהוי"].astype(str)
                               if s and s.lower()!='nan' and len(s)<=20 and pattern.match(s)})
 
-        # NEW: Filter out codes for shutters that have "חלוקה" in the mapping file
-        # These are already classified as slat types and shouldn't have bottom rail calculated
+        # Filter out codes whose SKU has 'חלוקה' set in the mapping — those are slat-type
+        # shutters that already include their bottom rail and shouldn't be offered for selection.
+        # Cross-reference via the matched DataFrame so we map SKUs (mapping) → codes (project).
         codes_with_split = set()
-        if "__SPLIT__" in mp.columns:
-            # Get SKUs from matched rows
-            matched_skus = matched["__SKU__"].dropna().unique()
-            # Find which ones have חלוקה defined
-            skus_with_split = mp[mp["__SPLIT__"].notna() & (mp["__SPLIT__"].astype(str).str.strip() != '')]["__SKU__"].tolist()
-            if skus_with_split:
-                log_message(f"Found {len(skus_with_split)} SKUs with 'חלוקה' defined: {skus_with_split}")
-                # Don't ask about bottom rail for these shutters - they're already slat types
-                log_message("Skipping bottom rail calculation for slat-type shutters (those with 'חלוקה')")
-                # Filter: only show codes that DON'T have חלוקה
-                codes_to_show = [code for code in uniq_codes
-                                if code not in codes_with_split]
-                log_message(f"Offering bottom rail selection for {len(codes_to_show)} codes (out of {len(uniq_codes)} total)")
-                uniq_codes = codes_to_show
+        if "__SPLIT__" in matched.columns and "קוד זיהוי" in matched.columns:
+            split_mask = matched["__SPLIT__"].notna() & (matched["__SPLIT__"].astype(str).str.strip() != "")
+            if split_mask.any():
+                codes_with_split = {
+                    str(c) for c in matched.loc[split_mask, "קוד זיהוי"].dropna()
+                    if str(c).strip() and str(c).lower() != "nan"
+                }
+                if codes_with_split:
+                    log_message(f"Slat-type codes (have חלוקה, skipping bottom-rail prompt): {sorted(codes_with_split)}")
+                    uniq_codes = [c for c in uniq_codes if c not in codes_with_split]
+                    log_message(f"Offering bottom rail selection for {len(uniq_codes)} codes")
 
         chosen = select_codes_from_list(uniq_codes) if uniq_codes else []
 

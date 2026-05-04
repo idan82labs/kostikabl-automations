@@ -17,7 +17,7 @@ from typing import List, Optional, Set
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 SHUTTER_SKU_PATTERN = re.compile(r"^(11|13)\d{6}$")
 MAPPING_FILENAMES = ["kostika_mapping.xlsx", "מקטים תריסים כולל.xlsx"]
@@ -89,8 +89,8 @@ def autodetect_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 def pick_sku_like_column(df: pd.DataFrame) -> Optional[str]:
     best_col, best_ratio = None, 0.0
     for col in df.columns:
-        s = df[col].astype(str)
-        ratio = s.map(lambda x: bool(re.fullmatch(r"\d{4,}", re.sub(r"\D", "", x or "")))).mean()
+        s = df[col].astype(str)  # NaN → 'nan' → has no digits, safely scores 0
+        ratio = s.map(lambda x: bool(re.fullmatch(r"\d{4,}", re.sub(r"\D", "", x)))).mean()
         if ratio > best_ratio:
             best_ratio, best_col = ratio, col
     return best_col if best_ratio >= 0.3 else None  # Raised from 0.05 → 0.3
@@ -308,6 +308,20 @@ def main():
     if qty_update:
         df = reconcile_with_xls(df, qty_update)
 
+    # Sanity-check: catch the common operator mistake of passing the qty-update XLS
+    # as the primary input. The rich Priority CSV always has 'פרויקט' AND 'מידה';
+    # the 'מחיר לסדרה' XLS has neither.
+    required_cols = ["פרויקט", "מידה"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        sys.stderr.write(
+            f"ERROR: Input is missing required columns: {missing}\n"
+            f"  Input columns ({len(df.columns)}): {df.columns.tolist()[:15]}{'...' if len(df.columns) > 15 else ''}\n"
+            f"  HINT: The main input must be the rich Priority CSV. The 'מחיר לסדרה' XLS\n"
+            f"  belongs in --qty-update, not as the primary input.\n"
+        )
+        sys.exit(2)
+
     sku_col = _smart_choose_sku(df, args.sku_col)
 
     color_col = args.color_col or autodetect_column(df, POSSIBLE_COLOR_HEADERS)
@@ -317,7 +331,14 @@ def main():
                 color_col = alt
                 break
     if not color_col:
-        sys.stderr.write("ERROR: Color/Shade column not found.\n")
+        cols = df.columns.tolist()
+        sys.stderr.write(
+            f"ERROR: Color/Shade column not found.\n"
+            f"  Input has {len(cols)} columns: {cols[:15]}{'...' if len(cols) > 15 else ''}\n"
+            f"  HINT: The main input must be the rich Priority CSV (with 'צבע פנימי' / 'גוון').\n"
+            f"  If you meant the 'מחיר לסדרה' XLS quantity-update report, pass it via --qty-update,\n"
+            f"  not as the primary input.\n"
+        )
         sys.exit(2)
 
     rule1 = df[sku_col].apply(rule_sku_is_numeric)
@@ -326,19 +347,21 @@ def main():
     if "מידה" in df.columns:
         rule3 = df["מידה"].notna() & (df["מידה"].astype(str).str.strip() != "")
 
-    kept = df[rule1 & rule2 & rule3].copy()
-
-    # Drop shutter-family rows that leak into the material order.
-    # Trigger: SKU is in the master shutter mapping OR matches the 8-digit 11/13 family.
+    # Shutter-family check applied as a filter rule so --print-stats reflects the drop.
     shutter_skus = _load_shutter_skus(input_path)
     def _is_shutter(sku_val) -> bool:
         digits = re.sub(r"\D", "", str(sku_val) if sku_val is not None else "")
         return digits in shutter_skus or bool(SHUTTER_SKU_PATTERN.match(digits))
-    shutter_mask = kept[sku_col].apply(_is_shutter)
-    if shutter_mask.any():
-        dropped = kept.loc[shutter_mask, sku_col].astype(str).tolist()
-        sys.stderr.write(f"Filtered {len(dropped)} shutter rows from material output: {dropped}\n")
-        kept = kept[~shutter_mask].copy()
+    rule_not_shutter = ~df[sku_col].apply(_is_shutter)
+
+    # Log specifically which shutter rows would have otherwise passed the other rules.
+    shutter_drops_mask = rule1 & rule2 & rule3 & ~rule_not_shutter
+    n_shutter_dropped = int(shutter_drops_mask.sum())
+    if n_shutter_dropped:
+        dropped = df.loc[shutter_drops_mask, sku_col].astype(str).tolist()
+        sys.stderr.write(f"Filtered {n_shutter_dropped} shutter rows from material output: {dropped}\n")
+
+    kept = df[rule1 & rule2 & rule3 & rule_not_shutter].copy()
 
     desired_columns = [
         ("פרויקט",            ["פרויקט"]),
@@ -405,8 +428,11 @@ def main():
                     ws[f"{col_letter}{row}"].number_format = "@"
 
     if args.print_stats:
-        print(f"Rows in: {len(df)} | kept: {len(kept)} | removed: {len(df) - len(kept)}")
+        removed = len(df) - len(kept)
+        print(f"Rows in: {len(df)} | kept: {len(kept)} | removed: {removed} (incl. {n_shutter_dropped} shutter rows)")
         print(f"SKU column: {sku_col} | Color column: {color_col}")
+        if qty_update:
+            print(f"Qty-update XLS applied: {qty_update}")
         print(f"Saved: {output_xlsx}")
     else:
         print(f"נשמר: {output_xlsx}")
