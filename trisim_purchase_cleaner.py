@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h50-PICKER_FALLBACK_AND_LOGGING"
+APP_VERSION = "1.4h51-SHUTTER_COUNT_ORIG_HEIGHT"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -781,6 +781,12 @@ def main():
             height_m[need] = (area_m2_in[need] / width_m[need]).round(5)
         height_mm_final = fix_units_mm(pd.to_numeric(pd.Series(height_m).astype(float)*1000, errors="coerce"))
 
+        # Keep the ORIGINAL (pre-slat-rounding) height for the quantity count.
+        # Opera's total area = unit_count × (width × ORIGINAL height). Slat-rounding inflates
+        # the height (for the purchase/cutting dimension only), so counting against the rounded
+        # height undercounts the shutters. The count must use the original per-unit area.
+        height_mm_for_count = height_mm_final.astype(float).copy()
+
         # Pavel's rule: round shutter height UP to the nearest multiple of חלוקה (slat profile mm).
         # Applies only to rows where the mapping defines a positive __SPLIT__ value (50/52/55/61 mm etc.).
         if "__SPLIT__" in matched.columns:
@@ -863,9 +869,13 @@ def main():
 
         # Calculate quantity
         # FIXED: Correct formula is total_area / area_per_unit, not the inverse!
+        # FIXED: per-unit area uses the ORIGINAL height (height_mm_for_count), NOT the slat-rounded
+        # height in base["גובה"]. Counting against the rounded-up height undercounts the shutters
+        # (e.g. 180-2026 detail 1: 56 → 54). See height_mm_for_count above.
         # For rows where input area exists, use it; otherwise default to 1
         with np.errstate(divide='ignore', invalid='ignore'):
-            area_per_unit = (base["רוחב"].astype(float)/1000.0) * (base["גובה"].astype(float)/1000.0)
+            count_height = pd.Series(height_mm_for_count, index=base.index).astype(float)
+            area_per_unit = (base["רוחב"].astype(float)/1000.0) * (count_height/1000.0)
             has_input_area = base["_area_input_temp"].notna() & (base["_area_input_temp"] > 0)
             qty = pd.Series([pd.NA] * len(base), index=base.index)
             # Use input area / area_per_unit when available
