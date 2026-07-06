@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h51-SHUTTER_COUNT_ORIG_HEIGHT"
+APP_VERSION = "1.4h52-RAIL_HEIGHT_INPUT_PLUS_SLAT"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -569,6 +569,129 @@ def select_codes_from_list(codes_list):
     log_message(f"Selected codes for bottom rail: {chosen}")
     return chosen
 
+def _code_sort_key(code: str):
+    """Sort detail codes naturally: numeric when possible, else lexicographic."""
+    s = str(code).strip()
+    m = re.match(r'^(\d+)', s)
+    return (0, int(m.group(1)), s) if m else (1, 0, s)
+
+def input_rail_heights_for_details(details):
+    """
+    Ask the operator for the rail height (גובה מסילות תריס) per rolling-shutter detail.
+
+    Pavel's rule: the shutter FIELD height is derived from the rail height read off the
+    production instruction (הוראת ייצור), which the Priority CSV export does not always
+    carry accurately. The operator confirms/edits the rail height per detail; several
+    details that share the same rail height can be selected together and set at once.
+
+    details: list of dicts {"code": str, "desc": str, "width": int|None, "default": float}
+    Returns: dict {code: rail_height_mm_float} for every detail (edited or confirmed),
+             or None if the operator cancelled (caller keeps the CSV-derived defaults).
+    """
+    result = {"cancelled": False}
+    root = tk.Tk(); root.title("גובה מסילות תריס לפי פרט")
+    root.attributes("-topmost", True)
+    root.geometry("640x640")
+
+    entries = {}   # code -> Entry
+    checks  = {}   # code -> BooleanVar
+
+    canvas = tk.Canvas(root, bg="#f0f0f0")
+    scrollbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    scrollable_frame = tk.Frame(canvas, bg="#f0f0f0")
+    scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    tk.Label(scrollable_frame,
+             text=("הזן/אשר גובה מסילות תריס (מ\"מ) לכל פרט — מתוך הוראת הייצור.\n"
+                   "ערך ברירת המחדל מגיע מהקובץ ולא תמיד זהה לגובה המסילות — כדאי לוודא.\n"
+                   "\"שדה\" הירוק = הגובה הסופי שיחושב (מוסיף שלב אחד ומעגל כלפי מעלה)."),
+             font=("Arial", 11, "bold"), bg="#f0f0f0", justify="right").pack(pady=10, padx=8, anchor="e")
+
+    def _field_preview(val_str, slat):
+        try:
+            v = float(str(val_str).replace(",", ""))
+            if v > 0 and slat and slat > 0:
+                return f"→ שדה {int(np.ceil((v + slat) / slat) * slat)}"
+        except (ValueError, TypeError):
+            pass
+        return "→ שדה —"
+
+    for d in details:
+        code = d["code"]
+        slat = d.get("slat")
+        row = tk.Frame(scrollable_frame, bg="#f0f0f0")
+        row.pack(fill="x", padx=10, pady=2)
+        v = tk.BooleanVar(); checks[code] = v
+        tk.Checkbutton(row, variable=v, bg="#f0f0f0").pack(side="right")
+        w_txt = f" · רוחב {d['width']}" if d.get("width") else ""
+        lbl = f"פרט {code} · {str(d.get('desc',''))[:30]}{w_txt}"
+        tk.Label(row, text=lbl, font=("Arial", 10), bg="#f0f0f0", anchor="e").pack(side="right", padx=6)
+        default_val = "" if d.get("default") is None else str(int(round(float(d["default"]))))
+        sv = tk.StringVar(); sv.set(default_val)
+        prev = tk.Label(row, text=_field_preview(default_val, slat), font=("Arial", 10, "bold"),
+                        fg="#1b5e20", bg="#f0f0f0", width=11, anchor="w")
+        prev.pack(side="left", padx=4)
+        e = tk.Entry(row, width=8, font=("Arial", 11), justify="center", textvariable=sv)
+        e.pack(side="left", padx=6)
+        sv.trace_add("write", lambda *a, s=sv, p=prev, sl=slat: p.config(text=_field_preview(s.get(), sl)))
+        entries[code] = e
+
+    # Bulk-apply strip: set the same rail height on all checked details at once.
+    bulk = tk.Frame(root, bg="#e8e8e8"); bulk.pack(side="bottom", fill="x")
+    bulk_entry = tk.Entry(bulk, width=8, font=("Arial", 11), justify="center")
+    bulk_entry.pack(side="left", padx=8, pady=8)
+    def apply_bulk():
+        val = bulk_entry.get().strip()
+        for code, v in checks.items():
+            if v.get():
+                entries[code].delete(0, "end"); entries[code].insert(0, val)
+    tk.Button(bulk, text="החל על המסומנים", command=apply_bulk, font=("Arial", 10),
+              bg="#2196F3", fg="white", padx=10, pady=4).pack(side="left", padx=4)
+    def select_all():
+        for v in checks.values(): v.set(True)
+    def clear_all():
+        for v in checks.values(): v.set(False)
+    tk.Button(bulk, text="בחר הכל", command=select_all, font=("Arial", 10),
+              bg="#9E9E9E", fg="white", padx=8, pady=4).pack(side="left", padx=2)
+    tk.Button(bulk, text="נקה הכל", command=clear_all, font=("Arial", 10),
+              bg="#9E9E9E", fg="white", padx=8, pady=4).pack(side="left", padx=2)
+
+    def on_ok():
+        root.destroy()
+    def on_close():
+        result["cancelled"] = True
+        root.destroy()
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    btn_row = tk.Frame(root, bg="#f0f0f0"); btn_row.pack(side="bottom", fill="x", pady=8)
+    tk.Button(btn_row, text="אישור", command=on_ok, font=("Arial", 11, "bold"),
+              bg="#4CAF50", fg="white", padx=20, pady=5).pack(side="right", padx=8)
+
+    canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+    scrollbar.pack(side="right", fill="y")
+    root.mainloop()
+
+    if result["cancelled"]:
+        log_message("Rail-height dialog cancelled — keeping CSV-derived heights.")
+        return None
+    out = {}
+    for d in details:
+        code = d["code"]
+        raw = entries[code].get().strip().replace(",", "")
+        try:
+            val = float(raw)
+            if val > 0:
+                out[code] = val
+                continue
+        except (ValueError, TypeError):
+            pass
+        # Blank/invalid -> fall back to this detail's CSV default so nothing is silently zeroed.
+        if d.get("default") is not None:
+            out[code] = float(d["default"])
+    log_message(f"Rail heights entered per detail: {out}")
+    return out
+
 def to_mm_numeric(s: pd.Series) -> pd.Series:
     def parse_val(v):
         if pd.isna(v): return np.nan
@@ -787,19 +910,62 @@ def main():
         # height undercounts the shutters. The count must use the original per-unit area.
         height_mm_for_count = height_mm_final.astype(float).copy()
 
-        # Pavel's rule: round shutter height UP to the nearest multiple of חלוקה (slat profile mm).
-        # Applies only to rows where the mapping defines a positive __SPLIT__ value (50/52/55/61 mm etc.).
+        # Pavel's shutter FIELD-height rule (rolling shutters, rows with a חלוקה / __SPLIT__ value):
+        #   field = ceil((rail_height + slat) / slat) * slat
+        # i.e. take the rail height (גובה מסילות תריס), ADD one full slat, then round UP to the
+        # next whole slat. Detail 19 / 198-2026: rail 1430, slat 52 -> ceil((1430+52)/52)*52 = 1508.
+        # The rail height per detail can be entered/confirmed by the operator (input dialog below),
+        # because the Priority CSV export does not always carry it accurately.
+        # NOTE: the unit COUNT still uses height_mm_for_count (the original area-derived height),
+        # so entering a rail height changes only the field/purchase height, never the quantity.
         if "__SPLIT__" in matched.columns:
             split_mm = pd.to_numeric(matched["__SPLIT__"], errors="coerce")
             split_mm.index = height_mm_final.index
             h_float = height_mm_final.astype(float)
             mask = split_mm.notna() & (split_mm > 0) & h_float.notna() & (h_float > 0)
             if mask.any():
-                rounded = np.ceil(h_float[mask] / split_mm[mask]) * split_mm[mask]
-                changed = (rounded != h_float[mask]).sum()
-                log_message(f"Slat-rounding: {int(mask.sum())} shutter rows have חלוקה; {int(changed)} heights were rounded up.")
+                # --- Per-detail rail-height input (Pavel's requested UX) ---
+                code_col = None
+                for c in ["קוד זיהוי","מס פרט","מספר פרט","מספר פריט","קוד פריט","קוד פנימי"]:
+                    if c in matched.columns:
+                        code_col = c; break
+                if code_col is not None:
+                    codes_for_rows = matched[code_col].astype(str)
+                    details = []
+                    seen = set()
+                    for idx in h_float[mask].index:
+                        code = str(codes_for_rows.get(idx, "")).strip()
+                        if not code or code.lower() == "nan" or code in seen:
+                            continue
+                        seen.add(code)
+                        wv = width_mm.get(idx)
+                        details.append({
+                            "code": code,
+                            "desc": str(matched["__DESC__"].get(idx, "")),
+                            "width": None if pd.isna(wv) else int(round(float(wv))),
+                            "default": float(h_float.get(idx)),
+                            "slat": float(split_mm.get(idx)),
+                        })
+                    if details:
+                        details.sort(key=lambda d: _code_sort_key(d["code"]))
+                        code_default = {d["code"]: int(round(d["default"])) for d in details}
+                        rail_override = input_rail_heights_for_details(details)
+                        if rail_override:
+                            # Apply a rail height ONLY where the operator actually CHANGED it from the
+                            # pre-filled default. Untouched details keep independent per-row rounding —
+                            # critical when one detail code legitimately spans rows of DIFFERENT heights
+                            # (repeated codes are valid Kostika data and must never be collapsed to one
+                            # height). An un-edited "אישור" therefore behaves exactly like keeping defaults.
+                            for idx in h_float[mask].index:
+                                code = str(codes_for_rows.get(idx, "")).strip()
+                                if code in rail_override and int(round(rail_override[code])) != code_default.get(code):
+                                    h_float.loc[idx] = float(rail_override[code])
+
+                rail_before = h_float.copy()
+                rounded = np.ceil((h_float[mask] + split_mm[mask]) / split_mm[mask]) * split_mm[mask]
+                log_message(f"Slat-rounding (+1 slat): computing field height for {int(mask.sum())} shutter rows.")
                 for idx in h_float[mask].index:
-                    log_message(f"  idx={idx}: height {h_float[idx]:.0f} → {rounded[idx]:.0f} (חלוקה={split_mm[idx]:.0f})")
+                    log_message(f"  idx={idx}: rail {rail_before[idx]:.0f} → field {rounded[idx]:.0f} (חלוקה={split_mm[idx]:.0f})")
                 h_float.loc[mask] = rounded
                 height_mm_final = h_float
 
