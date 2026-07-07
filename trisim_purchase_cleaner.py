@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h52-RAIL_HEIGHT_INPUT_PLUS_SLAT"
+APP_VERSION = "1.4h53-RAIL_DIALOG_TCL_FIX"
 
 # Create a log file for debugging
 def log_message(msg):
@@ -588,7 +588,7 @@ def input_rail_heights_for_details(details):
     Returns: dict {code: rail_height_mm_float} for every detail (edited or confirmed),
              or None if the operator cancelled (caller keeps the CSV-derived defaults).
     """
-    result = {"cancelled": False}
+    result = {"cancelled": False, "values": {}}
     root = tk.Tk(); root.title("גובה מסילות תריס לפי פרט")
     root.attributes("-topmost", True)
     root.geometry("640x640")
@@ -635,7 +635,14 @@ def input_rail_heights_for_details(details):
         prev.pack(side="left", padx=4)
         e = tk.Entry(row, width=8, font=("Arial", 11), justify="center", textvariable=sv)
         e.pack(side="left", padx=6)
-        sv.trace_add("write", lambda *a, s=sv, p=prev, sl=slat: p.config(text=_field_preview(s.get(), sl)))
+        def _upd(*a, s=sv, p=prev, sl=slat):
+            # Guard: a write can fire while the window is being torn down, when the
+            # preview Label no longer exists — never let that surface as an error dialog.
+            try:
+                p.config(text=_field_preview(s.get(), sl))
+            except Exception:
+                pass
+        sv.trace_add("write", _upd)
         entries[code] = e
 
     # Bulk-apply strip: set the same rail height on all checked details at once.
@@ -659,6 +666,13 @@ def input_rail_heights_for_details(details):
               bg="#9E9E9E", fg="white", padx=8, pady=4).pack(side="left", padx=2)
 
     def on_ok():
+        # Read the entry values NOW, while the widgets still exist. Reading them after
+        # root.destroy() raises Tcl "invalid command name ...!entry" (the widgets are gone).
+        for code, e in entries.items():
+            try:
+                result["values"][code] = e.get()
+            except Exception:
+                result["values"][code] = ""
         root.destroy()
     def on_close():
         result["cancelled"] = True
@@ -678,7 +692,7 @@ def input_rail_heights_for_details(details):
     out = {}
     for d in details:
         code = d["code"]
-        raw = entries[code].get().strip().replace(",", "")
+        raw = str(result["values"].get(code, "")).strip().replace(",", "")
         try:
             val = float(raw)
             if val > 0:
