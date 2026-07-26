@@ -18,7 +18,7 @@ import numpy as np, pandas as pd
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "1.4h53-RAIL_DIALOG_TCL_FIX"
+APP_VERSION = "1.4h54-SLAT53_AOR_MIDI_MASHUCH"
 
 # Create a log file for debugging
 def log_message(msg):
