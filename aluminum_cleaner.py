@@ -12,13 +12,14 @@ Fixes vs previous version:
 - Removed dead function has_letter_and_digit
 """
 
-import argparse, sys, re, os
+import argparse, sys, re, os, math
+from collections import Counter
 from datetime import datetime
 from typing import List, Optional, Set
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 
 
 def _safe_log(msg: str) -> None:
@@ -77,7 +78,7 @@ def _load_shutter_skus(input_path: str) -> Set[str]:
 
 try:
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, messagebox, ttk
     TK_AVAILABLE = True
 except Exception:
     TK_AVAILABLE = False
@@ -274,6 +275,175 @@ def reconcile_with_xls(df: pd.DataFrame, xls_path: str) -> pd.DataFrame:
     return df
 
 
+def _order_number(value) -> float:
+    """Accept decimal dot/comma, but reject missing and non-finite values."""
+    try:
+        number = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("יש להזין מספר תקין") from None
+    if not math.isfinite(number):
+        raise ValueError("יש להזין מספר תקין")
+    return number
+
+
+def material_order_rows(df: pd.DataFrame):
+    """Keep source rows separate (including different colors of the same SKU).
+
+    Priority's מידה is millimetres and משקל is the TOTAL row weight in kg.
+    Capture kg/metre before either the bar count or length can be changed.
+    """
+    required = ["שם-מקייט", "כמות", "מידה", "משקל"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError("חסרות עמודות בקובץ המקור: " + ", ".join(missing))
+    rows = []
+    for _, row in df.iterrows():
+        sku = str(row["שם-מקייט"])
+        try:
+            quantity = _order_number(row["כמות"])
+            length_m = _order_number(row["מידה"]) / 1000
+            weight = _order_number(row["משקל"])
+            if quantity <= 0 or length_m <= 0 or weight <= 0:
+                raise ValueError("ערכי המקור חייבים להיות גדולים מאפס")
+            kg_per_m = weight / (quantity * length_m)
+            if not math.isfinite(kg_per_m) or kg_per_m <= 0:
+                raise ValueError("משקל למטר אינו תקין")
+        except ValueError as exc:
+            raise ValueError(f'מק"ט {sku}: לא ניתן לחשב משקל למטר. {exc}') from None
+        rows.append({"sku": sku, "color": str(row.get("גוון", "")),
+                     "quantity": quantity, "length_m": length_m, "kg_per_m": kg_per_m})
+    return rows
+
+
+def _material_values(quantity, length_m, kg_per_m):
+    quantity = _order_number(quantity)
+    length_m = _order_number(length_m)
+    if quantity < 0 or not quantity.is_integer():
+        raise ValueError("כמות המוטות חייבת להיות מספר שלם, אפס ומעלה")
+    if length_m <= 0:
+        raise ValueError("אורך המוט במטרים חייב להיות גדול מאפס")
+    weight = quantity * length_m * kg_per_m
+    if not math.isfinite(weight) or not math.isfinite(length_m * 1000):
+        raise ValueError("הערכים שהוזנו גדולים מדי")
+    return int(quantity), length_m, weight
+
+
+def apply_material_order(df: pd.DataFrame, rows, values) -> pd.DataFrame:
+    """Apply validated edits by position, without merging distinct source rows."""
+    if len(df) != len(rows) or len(rows) != len(values):
+        raise ValueError("רשימת הפרופילים אינה תואמת לקובץ המקור")
+    result = df.copy()
+    for col in ("כמות", "מידה", "משקל"):
+        result[col] = result[col].astype(object)
+    for position, (row, value) in enumerate(zip(rows, values)):
+        quantity, length_m, weight = _material_values(*value, row["kg_per_m"])
+        for col, number in (("כמות", quantity), ("מידה", length_m * 1000), ("משקל", round(weight, 6))):
+            result.iat[position, result.columns.get_loc(col)] = number
+    return result
+
+
+def input_material_order(rows):
+    """Return count/length edits; cancelling aborts export instead of using old values."""
+    root = tk.Tk()
+    root.title(f"הזמנת חומר — גרסה {APP_VERSION}")
+    root.attributes("-topmost", True)
+    root.geometry(f"680x{min(680, root.winfo_screenheight() - 100)}")
+    root.minsize(560, 350)
+    result = None
+    entries = []
+    ttk.Label(root, text='עדכון כמות ואורך מוט לכל פרופיל', anchor="e",
+              font=("Arial", 13, "bold")).pack(fill="x", padx=16, pady=(14, 6))
+    ttk.Label(root, text='האורך במטרים. כמות 0 מסירה את הפרופיל מההזמנה.\n'
+              'המשקל מחושב לפי המשקל למטר שבקובץ המקור.',
+              justify="right", anchor="e").pack(fill="x", padx=16, pady=(0, 10))
+
+    def on_ok():
+        nonlocal result
+        values = []
+        for row, (quantity, length, _) in zip(rows, entries):
+            try:
+                q, length_m, _ = _material_values(quantity.get(), length.get(), row["kg_per_m"])
+            except ValueError as exc:
+                messagebox.showerror("ערך לא תקין", f'מק"ט {row["sku"]}: {exc}', parent=root)
+                return
+            values.append((q, length_m))
+        # Read all widgets BEFORE destroying the window (same rule as the shutter dialog).
+        result = values
+        root.destroy()
+
+    buttons = ttk.Frame(root)
+    buttons.pack(side="bottom", fill="x", padx=16, pady=12)
+    ttk.Button(buttons, text="אישור והפקת אקסל", command=on_ok).pack(side="right", padx=4)
+    ttk.Button(buttons, text="ביטול", command=root.destroy).pack(side="right", padx=4)
+    body = ttk.Frame(root)
+    body.pack(fill="both", expand=True, padx=12)
+    canvas = tk.Canvas(body, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    table = ttk.Frame(canvas)
+    window = canvas.create_window((0, 0), window=table, anchor="nw")
+    table.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+    for col, label in enumerate(['משקל כולל (ק"ג)', 'אורך מוט (מטר)', 'כמות מוטות', 'מק"ט']):
+        ttk.Label(table, text=label, anchor="center", font=("Arial", 10, "bold")).grid(
+            row=0, column=col, padx=8, pady=8, sticky="ew")
+        table.columnconfigure(col, weight=1)
+    sku_counts = Counter(row["sku"] for row in rows)
+    for number, row in enumerate(rows, start=1):
+        quantity = tk.StringVar(root, value=str(row["quantity"]))
+        length = tk.StringVar(root, value=str(row["length_m"]))
+        preview = ttk.Label(table, anchor="center")
+        preview.grid(row=number, column=0, padx=8, pady=5, sticky="ew")
+        length_entry = ttk.Entry(table, textvariable=length, justify="center", width=12)
+        length_entry.grid(row=number, column=1, padx=8, pady=5, sticky="ew")
+        quantity_entry = ttk.Entry(table, textvariable=quantity, justify="center", width=12)
+        quantity_entry.grid(row=number, column=2, padx=8, pady=5, sticky="ew")
+        label = row["sku"]
+        if sku_counts[row["sku"]] > 1:
+            label += f' ({row["color"]})'
+        ttk.Label(table, text=label, anchor="e").grid(row=number, column=3, padx=8, pady=5, sticky="ew")
+
+        def update_preview(*_, q=quantity, length_var=length, p=preview, rate=row["kg_per_m"]):
+            try:
+                weight = _material_values(q.get(), length_var.get(), rate)[2]
+                p.configure(text=f"{weight:,.3f}")
+            except ValueError:
+                p.configure(text="—")
+        quantity.trace_add("write", update_preview)
+        length.trace_add("write", update_preview)
+        update_preview()
+        entries.append((quantity, length, quantity_entry))
+        # Tab navigation scrolls the focused input into view.
+        def show_entry(event):
+            root.update_idletasks()
+            height = table.winfo_height()
+            if height > canvas.winfo_height():
+                y = event.widget.winfo_y()
+                top = canvas.canvasy(0)
+                if y < top or y + event.widget.winfo_height() > top + canvas.winfo_height():
+                    canvas.yview_moveto(max(0, y - 40) / height)
+        quantity_entry.bind("<FocusIn>", show_entry)
+        length_entry.bind("<FocusIn>", show_entry)
+
+    def scroll(event):
+        if getattr(event, "num", None) in (4, 5):
+            delta = -1 if event.num == 4 else 1
+        else:
+            delta = -int(event.delta / 120) if abs(event.delta) >= 120 else -int(event.delta)
+        canvas.yview_scroll(delta, "units")
+    root.bind("<MouseWheel>", scroll)
+    root.bind("<Button-4>", scroll)
+    root.bind("<Button-5>", scroll)
+    root.bind("<Escape>", lambda e: root.destroy())
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    if entries:
+        entries[0][2].focus_set()
+    root.mainloop()
+    return result
+
+
 def pick_files_interactively():
     if TK_AVAILABLE:
         root = tk.Tk(); root.withdraw()
@@ -282,10 +452,6 @@ def pick_files_interactively():
             filetypes=[("CSV / Excel", "*.csv *.xlsx *.xls")]
         )
         if not inp: sys.exit(0)
-        xls_qty = filedialog.askopenfilename(
-            title="בחר/י קובץ XLS עם כמויות מעודכנות (Cancel = מצב CSV בלבד)",
-            filetypes=[("XLS / Excel", "*.xls *.xlsx")]
-        ) or None
         base, _ = os.path.splitext(os.path.basename(inp))
         initialdir = os.path.dirname(inp) or os.getcwd()
         out = filedialog.asksaveasfilename(
@@ -296,7 +462,8 @@ def pick_files_interactively():
             filetypes=[("Excel", "*.xlsx")]
         )
         if not out: sys.exit(0)
-        return inp, out, xls_qty
+        root.destroy()
+        return inp, out, None
 
     inp = input("Enter input file path: ").strip('"')
     base = os.path.splitext(os.path.basename(inp))[0]
@@ -321,6 +488,7 @@ def main():
                     help="Optional XLS file with updated quantities; weight is recomputed proportionally")
     args = ap.parse_args()
 
+    interactive = not args.input_path and not args.output_csv
     if not args.input_path and not args.output_csv:
         input_path, output_csv, qty_update = pick_files_interactively()
     elif args.input_path and not args.output_csv:
@@ -441,6 +609,21 @@ def main():
             digits = re.sub(r"\D", "", str(val))
             return digits.zfill(5) if len(digits) <= 4 else digits
         kept["שם-מקייט"] = kept["שם-מקייט"].apply(pad_sku)
+
+    if interactive and TK_AVAILABLE:
+        if kept.empty:
+            _show_error_messagebox("לא נמצאו פרופילים להזמנת חומר בקובץ שנבחר.")
+            return
+        try:
+            rows = material_order_rows(kept)
+            values = input_material_order(rows)
+            if values is None:
+                return
+            kept = apply_material_order(kept, rows, values)
+            kept = kept.loc[kept["כמות"] > 0].copy()
+        except ValueError as exc:
+            _show_error_messagebox(str(exc))
+            return
 
     # Normalize output path
     if not output_csv.endswith(".xlsx"):

@@ -50,6 +50,18 @@ jobs:
           echo "aluminum=$alu"  >> $env:GITHUB_OUTPUT
           Write-Host "trisim=$trisim  aluminum=$alu"
 
+      - name: Test material-order calculations, export, and Tk dialog
+        run: python -m unittest -v test_aluminum_cleaner
+        env:
+          KOSTIKA_UI_SCREENSHOT: ${{ github.workspace }}/material-dialog.png
+
+      - name: Upload Windows dialog preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: material-dialog-preview
+          path: material-dialog.png
+          if-no-files-found: error
+
       - name: Build trisim_purchase_cleaner.exe
         run: pyinstaller --noconfirm --onefile --windowed --name trisim_purchase_cleaner --add-data "kostika_mapping.xlsx;." trisim_purchase_cleaner.py
 
